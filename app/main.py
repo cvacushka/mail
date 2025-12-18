@@ -6,8 +6,6 @@ from fastapi.exceptions import RequestValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from app.core.config import settings
 from app.api.main import api_router
-from app.database import engine
-from app.models import Base
 
 # Настройка логирования
 logging.basicConfig(
@@ -15,13 +13,6 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
-
-# Создание таблиц (в продакшене используйте Alembic миграции)
-try:
-    Base.metadata.create_all(bind=engine)
-    logger.info("Database tables created successfully")
-except Exception as e:
-    logger.error(f"Error creating database tables: {e}")
 
 app = FastAPI(
     title=settings.PROJECT_NAME,

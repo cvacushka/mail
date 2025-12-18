@@ -1,22 +1,100 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, or_, func
 from fastapi import HTTPException, status
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 from app.models.message import Message
 from app.models.attachment import Attachment
 from app.models.user import User
 from app.schemas.message import MessageCreate, AttachmentCreate
+from app.core.config import settings
 
 
 class MessageService:
+    @staticmethod
+    def _check_spam_protection(
+        db: Session,
+        sender_id: int,
+        recipient_id: int,
+        subject: str,
+        body: str
+    ) -> None:
+        """Проверка защиты от спама"""
+        now = datetime.utcnow()
+        
+        # 1. Проверка на дубликаты (проверяем первым, так как это более специфичная проверка)
+        duplicate_window_ago = now - timedelta(seconds=settings.DUPLICATE_MESSAGE_WINDOW_SECONDS)
+        duplicate_message = db.query(Message).filter(
+            and_(
+                Message.sender_id == sender_id,
+                Message.recipient_id == recipient_id,
+                Message.subject == subject,
+                Message.body == body,
+                Message.created_at >= duplicate_window_ago
+            )
+        ).first()
+        
+        if duplicate_message:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You have recently sent an identical message to this recipient. Please wait before sending duplicates."
+            )
+        
+        # 2. Проверка минимального интервала между сообщениями
+        min_interval_ago = now - timedelta(seconds=settings.MIN_SECONDS_BETWEEN_MESSAGES)
+        recent_message = db.query(Message).filter(
+            and_(
+                Message.sender_id == sender_id,
+                Message.created_at >= min_interval_ago
+            )
+        ).order_by(Message.created_at.desc()).first()
+        
+        if recent_message:
+            seconds_ago = (now - recent_message.created_at).total_seconds()
+            # Проверяем что сообщение действительно недавнее (не отрицательное время)
+            if seconds_ago >= 0 and seconds_ago < settings.MIN_SECONDS_BETWEEN_MESSAGES:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail=f"Please wait {settings.MIN_SECONDS_BETWEEN_MESSAGES} seconds between messages. Last message was sent {int(seconds_ago)} seconds ago."
+                )
+        
+        # 3. Проверка лимита сообщений в минуту
+        one_minute_ago = now - timedelta(minutes=1)
+        messages_last_minute = db.query(func.count(Message.id)).filter(
+            and_(
+                Message.sender_id == sender_id,
+                Message.created_at >= one_minute_ago
+            )
+        ).scalar()
+        
+        if messages_last_minute >= settings.MAX_MESSAGES_PER_MINUTE:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Too many messages sent. Maximum {settings.MAX_MESSAGES_PER_MINUTE} messages per minute allowed."
+            )
+        
+        # 4. Проверка лимита сообщений в час
+        one_hour_ago = now - timedelta(hours=1)
+        messages_last_hour = db.query(func.count(Message.id)).filter(
+            and_(
+                Message.sender_id == sender_id,
+                Message.created_at >= one_hour_ago
+            )
+        ).scalar()
+        
+        if messages_last_hour >= settings.MAX_MESSAGES_PER_HOUR:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Too many messages sent. Maximum {settings.MAX_MESSAGES_PER_HOUR} messages per hour allowed."
+            )
+    
     @staticmethod
     def create_message(
         db: Session,
         message_data: MessageCreate,
         sender_id: int
     ) -> Message:
-        """Создание нового сообщения"""
+        """Создание нового сообщения с защитой от спама"""
         # Проверка существования получателя
         recipient = db.query(User).filter(User.id == message_data.recipient_id).first()
         if not recipient:
@@ -30,6 +108,18 @@ class MessageService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Cannot send message to inactive user"
             )
+        
+        # Проверка, что пользователь не отправляет сообщение самому себе
+        if sender_id == message_data.recipient_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot send message to yourself"
+            )
+        
+        # Проверка защиты от спама
+        MessageService._check_spam_protection(
+            db, sender_id, message_data.recipient_id, message_data.subject, message_data.body
+        )
         
         # Создание сообщения
         db_message = Message(

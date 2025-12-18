@@ -1,4 +1,5 @@
 import logging
+from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from fastapi import HTTPException, status
@@ -83,7 +84,7 @@ class AuthService:
             )
     
     @staticmethod
-    def authenticate_user(db: Session, username: str, password: str) -> User | None:
+    def authenticate_user(db: Session, username: str, password: str) -> Optional[User]:
         """Аутентификация пользователя"""
         user = db.query(User).filter(User.username == username).first()
         

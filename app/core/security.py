@@ -8,7 +8,7 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Максимальная длина пароля для bcrypt (72 байта)
 MAX_PASSWORD_LENGTH = 72
